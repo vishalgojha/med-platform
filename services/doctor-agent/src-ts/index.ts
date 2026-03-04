@@ -29,6 +29,12 @@ import {
   requeueFailedDelivery,
   retryFailedDeliveryNow
 } from "./messaging/delivery-queue.js";
+import {
+  getIndiaProfile,
+  getSpecialtyValidationMessage,
+  listSpecialtyDirectory,
+  normalizeSpecialtyId,
+} from "./orchestration/router.js";
 
 function print(data: unknown): void {
   console.log(JSON.stringify(data, null, 2));
@@ -48,19 +54,11 @@ function cliExecuteOptions(confirm?: boolean, actorId = "cli"): { confirm: boole
 }
 
 function parseSpecialty(value: string): Specialty {
-  const allowed: Specialty[] = [
-    "primary_care",
-    "emergency",
-    "oncology",
-    "psychiatry",
-    "hospitalist",
-    "surgery",
-    "general"
-  ];
-  if (!allowed.includes(value as Specialty)) {
-    throw new Error(`Invalid specialty '${value}'. Allowed: ${allowed.join(", ")}`);
+  const normalized = normalizeSpecialtyId(value);
+  if (!normalized) {
+    throw new Error(`Invalid specialty '${value}'. ${getSpecialtyValidationMessage()}`);
   }
-  return value as Specialty;
+  return normalized;
 }
 
 async function runHealth(): Promise<void> {
@@ -170,6 +168,35 @@ export async function runCli(argv = process.argv): Promise<void> {
           print(patient ? { ok: true, data: patient } : { ok: false, code: "NOT_FOUND", message: "Patient not found" });
         })
     );
+
+  program
+    .command("specialty-list")
+    .description("list supported India-first clinical specialties")
+    .option("--setting <setting>", "clinic|hospital")
+    .option("--language <language>", "en|hi", "en")
+    .action((opts) => {
+      const setting = opts.setting === "clinic" || opts.setting === "hospital" ? opts.setting : undefined;
+      const language = opts.language === "hi" ? "hi" : "en";
+      print({
+        ok: true,
+        data: listSpecialtyDirectory({ setting, language })
+      });
+    });
+
+  program
+    .command("agent-profile")
+    .description("show default India multi-agent deployment profile")
+    .option("--languages <languages>", "comma-separated language list, e.g. en,hi", "en,hi")
+    .action((opts) => {
+      const languages = String(opts.languages)
+        .split(",")
+        .map((value) => value.trim())
+        .filter((value): value is "en" | "hi" => value === "en" || value === "hi");
+      print({
+        ok: true,
+        data: getIndiaProfile(languages.length > 0 ? languages : undefined)
+      });
+    });
 
   program
     .command("scribe")

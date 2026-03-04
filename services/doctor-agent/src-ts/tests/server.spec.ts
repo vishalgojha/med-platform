@@ -1320,3 +1320,71 @@ test("api doctor and patient registry endpoints create and list records", async 
     teardownTestDb(dbPath);
   }
 });
+
+test("api specialties lists multilingual directory with setting filter", async () => {
+  const dbPath = setupTestDb("server-specialties-list");
+  const svc = await startTestServer();
+  try {
+    const res = await fetch(`${svc.baseUrl}/api/specialties?setting=clinic&language=hi`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      data: Array<{ id: string; label: string; settings: string[] }>;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.data.length > 0, true);
+    assert.equal(body.data.some((entry) => entry.id === "family_medicine"), true);
+    assert.equal(body.data.every((entry) => entry.settings.includes("clinic")), true);
+    assert.equal(typeof body.data[0].label, "string");
+    assert.equal(body.data[0].label.length > 0, true);
+  } finally {
+    await svc.close();
+    teardownTestDb(dbPath);
+  }
+});
+
+test("api agent router executes consultation workflow with routed steps", async () => {
+  const dbPath = setupTestDb("server-agent-router-consultation");
+  const svc = await startTestServer();
+  try {
+    const doctor = addDoctor({ name: "Dr Router", specialty: "family_medicine" });
+    const patient = addPatient({ doctorId: doctor.id, name: "Pat Router", phone: "+15557770001" });
+
+    const res = await fetch(`${svc.baseUrl}/api/agent-router/execute`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        workflow: "consultation_documentation",
+        specialtyId: "family_medicine",
+        doctorId: doctor.id,
+        patientId: patient.id,
+        payload: {
+          transcript: "Patient reports fever and cough for two days.",
+          query: "Any immediate red flags?"
+        }
+      })
+    });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      data: {
+        workflow: string;
+        specialtyId: string;
+        leadAgent: string;
+        steps: Array<{ capability: string }>;
+      };
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.data.workflow, "consultation_documentation");
+    assert.equal(body.data.specialtyId, "family_medicine");
+    assert.equal(typeof body.data.leadAgent, "string");
+    assert.equal(body.data.steps.length, 2);
+    assert.deepEqual(
+      body.data.steps.map((step) => step.capability),
+      ["scribe", "decision_support"]
+    );
+  } finally {
+    await svc.close();
+    teardownTestDb(dbPath);
+  }
+});

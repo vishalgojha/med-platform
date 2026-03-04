@@ -46,7 +46,17 @@ import { getFollowUpQueueStats } from "./capabilities/follow-up.js";
 import { getDb } from "./db/client.js";
 import { nowIso } from "./utils.js";
 import { addDoctor, getDoctorById, listDoctors } from "./doctors/store.js";
-import { Specialty } from "./types.js";
+import {
+  executeAgentWorkflow,
+  getIndiaProfile,
+  getSpecialtyValidationMessage,
+  getWorkflowValidationMessage,
+  listSpecialtyDirectory,
+  normalizeSpecialtyId,
+  parseLanguage,
+  parseSetting,
+  parseWorkflow,
+} from "./orchestration/router.js";
 
 function sendJson(res: Response, status: number, payload: unknown): void {
   res.status(status).json(payload);
@@ -104,20 +114,6 @@ function twilioWebhookDedupeKey(body: Record<string, string>): string {
     body.ErrorCode ?? "",
     body.ErrorMessage ?? ""
   ].join("|");
-}
-
-function parseSpecialty(value: unknown): Specialty | null {
-  if (typeof value !== "string") return null;
-  const allowed: Specialty[] = [
-    "primary_care",
-    "emergency",
-    "oncology",
-    "psychiatry",
-    "hospitalist",
-    "surgery",
-    "general"
-  ];
-  return allowed.includes(value as Specialty) ? (value as Specialty) : null;
 }
 
 function validateCapabilityPayload(
@@ -468,6 +464,107 @@ export function createServer(deps: RuntimeDeps = createRuntimeDeps()) {
     if (!requireScope(req, res, "read")) return;
     await handleCapability(req, res, "decision_support", deps);
   });
+  app.get("/api/specialties", (req, res) => {
+    if (!requireScope(req, res, "read")) return;
+    const settingRaw = typeof req.query.setting === "string" ? req.query.setting : undefined;
+    const languageRaw = typeof req.query.language === "string" ? req.query.language : undefined;
+    const setting = settingRaw ? parseSetting(settingRaw) : null;
+    const language = languageRaw ? parseLanguage(languageRaw) : null;
+
+    if (settingRaw && !setting) {
+      sendJson(res, 422, appError("VALIDATION_ERROR", "setting must be one of clinic|hospital"));
+      return;
+    }
+    if (languageRaw && !language) {
+      sendJson(res, 422, appError("VALIDATION_ERROR", "language must be one of en|hi"));
+      return;
+    }
+
+    sendJson(
+      res,
+      200,
+      {
+        ok: true,
+        data: listSpecialtyDirectory({
+          setting: setting ?? undefined,
+          language: language ?? "en",
+        }),
+      },
+    );
+  });
+  app.get("/api/agents/deployment-profile", (req, res) => {
+    if (!requireScope(req, res, "read")) return;
+    const rawLanguages = typeof req.query.languages === "string" ? req.query.languages : undefined;
+    const languages = rawLanguages
+      ? rawLanguages
+          .split(",")
+          .map((value) => parseLanguage(value.trim()))
+          .filter((value): value is "en" | "hi" => Boolean(value))
+      : undefined;
+
+    if (rawLanguages && (!languages || languages.length === 0)) {
+      sendJson(res, 422, appError("VALIDATION_ERROR", "languages must include en and/or hi"));
+      return;
+    }
+
+    sendJson(res, 200, { ok: true, data: getIndiaProfile(languages) });
+  });
+  app.post("/api/agent-router/execute", async (req, res) => {
+    if (!requireScope(req, res, "write")) return;
+    const body = asObject(req.body);
+    if (!body) {
+      sendJson(res, 400, appError("VALIDATION_ERROR", "Request body must be a JSON object"));
+      return;
+    }
+
+    const specialtyId = normalizeSpecialtyId(body.specialtyId);
+    if (!specialtyId) {
+      sendJson(res, 422, appError("VALIDATION_ERROR", getSpecialtyValidationMessage()));
+      return;
+    }
+
+    const workflow = parseWorkflow(body.workflow);
+    if (!workflow) {
+      sendJson(res, 422, appError("VALIDATION_ERROR", getWorkflowValidationMessage()));
+      return;
+    }
+
+    const payload = asObject(body.payload) ?? {};
+    const doctorId = requireString(body, "doctorId") ?? (typeof payload.doctorId === "string" ? payload.doctorId : null);
+    const patientId = requireString(body, "patientId") ?? (typeof payload.patientId === "string" ? payload.patientId : undefined);
+    if (!doctorId) {
+      sendJson(res, 422, appError("VALIDATION_ERROR", "doctorId is required"));
+      return;
+    }
+
+    try {
+      const result = await executeAgentWorkflow(
+        {
+          workflow,
+          specialtyId,
+          doctorId,
+          patientId,
+          payload,
+          dryRun: Boolean(body.dryRun),
+        },
+        createCapabilityHandlers(deps),
+        {
+          confirm: Boolean(body.confirm),
+          requestId: String(req.headers["x-request-id"] ?? ""),
+          actorId: String(req.headers["x-actor-id"] ?? "system"),
+        },
+      );
+
+      if ("ok" in result && result.ok === false) {
+        sendJson(res, result.blocked ? 409 : 400, result);
+        return;
+      }
+
+      sendJson(res, 200, { ok: true, data: result });
+    } catch (error) {
+      sendJson(res, 500, toStructuredError(error));
+    }
+  });
   app.get("/api/doctors", (req, res) => {
     if (!requireScope(req, res, "read")) return;
     sendJson(res, 200, { ok: true, data: listDoctors() });
@@ -480,7 +577,7 @@ export function createServer(deps: RuntimeDeps = createRuntimeDeps()) {
       return;
     }
     const name = requireString(body, "name");
-    const specialty = parseSpecialty(body.specialty);
+    const specialty = normalizeSpecialtyId(body.specialty);
     if (!name) {
       sendJson(res, 422, appError("VALIDATION_ERROR", "name is required"));
       return;
@@ -489,7 +586,7 @@ export function createServer(deps: RuntimeDeps = createRuntimeDeps()) {
       sendJson(
         res,
         422,
-        appError("VALIDATION_ERROR", "specialty must be one of primary_care|emergency|oncology|psychiatry|hospitalist|surgery|general")
+        appError("VALIDATION_ERROR", getSpecialtyValidationMessage())
       );
       return;
     }

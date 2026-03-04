@@ -13,7 +13,7 @@
     "dev:mediscribe": "npm run dev -w @med-platform/mediscribe -- --host --port 4102",
     "dev:medipal": "npm run dev -w @med-platform/medipal -- --host --port 4103",
     "dev:gluco-vital": "npm run dev -w @med-platform/gluco-vital -- --host --port 4104",
-    "dev:doctor-agent": "npm run start -w doctor-agent",
+    "dev:doctor-agent": "npm run build -w @med-platform/clinical-specialties && npm run build -w @med-platform/agent-orchestrator && npm run start -w doctor-agent",
     "dev:all": "concurrently \"npm run dev:medisuite\" \"npm run dev:mediscribe\" \"npm run dev:medipal\" \"npm run dev:gluco-vital\"",
     "dev:stack": "concurrently \"npm run dev:doctor-agent\" \"npm run dev:all\"",
     "build": "npm run build --workspaces --if-present",

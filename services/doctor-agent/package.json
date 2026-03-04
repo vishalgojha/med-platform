@@ -24,6 +24,8 @@
     "prepare": "npm run build"
   },
   "dependencies": {
+    "@med-platform/agent-orchestrator": "0.1.0",
+    "@med-platform/clinical-specialties": "0.1.0",
     "@anthropic-ai/sdk": "^0.56.0",
     "better-sqlite3": "^12.4.1",
     "commander": "^14.0.1",

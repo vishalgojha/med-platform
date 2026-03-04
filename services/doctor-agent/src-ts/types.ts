@@ -1,11 +1,4 @@
-export type Specialty =
-  | "primary_care"
-  | "emergency"
-  | "oncology"
-  | "psychiatry"
-  | "hospitalist"
-  | "surgery"
-  | "general";
+export type Specialty = string;
 
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 

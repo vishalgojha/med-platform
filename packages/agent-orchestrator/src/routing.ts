@@ -4,7 +4,7 @@ import {
   type SpecialtyCategory,
   type SupportedLanguage,
 } from "@med-platform/clinical-specialties";
-import type { AgentRoleDefinition, AgentRoleId, IndiaDeploymentProfile, SpecialtyRoute } from "./types";
+import type { AgentRoleDefinition, AgentRoleId, IndiaDeploymentProfile, SpecialtyRoute } from "./types.js";
 
 const DEFAULT_LANGUAGES: SupportedLanguage[] = ["en", "hi"];
 

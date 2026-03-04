@@ -2,7 +2,7 @@ import type {
   CareSetting,
   SpecialtyDefinition,
   SupportedLanguage,
-} from "./types";
+} from "./types.js";
 
 const CORE_CLINICAL = ["triage", "consultation", "documentation"] as const;
 const HOSPITAL_EXTENDED = [

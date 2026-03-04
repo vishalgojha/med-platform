@@ -48,6 +48,8 @@ npm run start -- doctor health
 # Doctor profiles
 npm run start -- doctor add --name "Dr. Ellis" --specialty primary_care
 npm run start -- doctor list
+npm run start -- specialty-list --setting clinic --language hi
+npm run start -- agent-profile --languages en,hi
 
 # Fast local demo seed
 npm run start -- seed
@@ -109,6 +111,9 @@ Endpoints:
 - `GET /api/doctors`
 - `POST /api/doctors`
 - `GET /api/doctors/:id`
+- `GET /api/specialties`
+- `GET /api/agents/deployment-profile`
+- `POST /api/agent-router/execute`
 - `GET /api/patients`
 - `POST /api/patients`
 - `GET /api/patients/:id`
@@ -151,6 +156,18 @@ Example payloads:
 ```
 ```json
 { "patientId": "p_123", "query": "Is it safe to add metformin given current meds?" }
+```
+```json
+{
+  "workflow": "consultation_documentation",
+  "specialtyId": "family_medicine",
+  "doctorId": "d_123",
+  "patientId": "p_123",
+  "payload": {
+    "transcript": "Patient reports mild cough for two days",
+    "query": "Any immediate red flags?"
+  }
+}
 ```
 If `API_TOKEN` is configured, include:
 ```http
