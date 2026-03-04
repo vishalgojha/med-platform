@@ -1,0 +1,412 @@
+import React, { useState, useEffect } from "react";
+import { appClient } from "@/api/appClient";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Users, UserCheck, Clock, Activity, Droplet, Heart, TrendingUp, MessageCircle, FileText, Loader2, CheckCircle, AlertTriangle, UserPlus, Mail } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { toast } from "sonner";
+import { Link } from "react-router-dom";
+import { createPageUrl } from "@/utils";
+import { format, isToday } from "date-fns";
+
+export default function CoachDashboard() {
+  const [user, setUser] = useState(null);
+  const [showInviteDialog, setShowInviteDialog] = useState(false);
+  const [inviteForm, setInviteForm] = useState({ client_email: "", client_name: "", message: "" });
+  const [inviteSuccess, setInviteSuccess] = useState(false);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    appClient.auth.me().then(setUser).catch(() => {});
+  }, []);
+
+  const inviteMutation = useMutation({
+    mutationFn: async (data) => {
+      const response = await appClient.functions.invoke('inviteClient', data);
+      if (response.data?.error) {
+        throw new Error(response.data.error);
+      }
+      return response.data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['coach-clients'] });
+      setInviteSuccess(true);
+      if (!data.emailSent) {
+        toast.warning(`Connection created but email failed: ${data.emailError || 'Unknown error'}`);
+      }
+    },
+    onError: (error) => {
+      toast.error(error?.response?.data?.error || error?.message || "Failed to send invitation");
+    }
+  });
+
+  const { data: connections = [], isLoading: connectionsLoading } = useQuery({
+    queryKey: ['coach-clients', user?.email],
+    queryFn: () => appClient.entities.CoachConnection.filter({ coach_email: user?.email }),
+    enabled: !!user?.email
+  });
+
+  const pendingConnections = connections.filter(c => c.status === "pending");
+  const activeConnections = connections.filter(c => c.status === "active");
+
+  const acceptMutation = useMutation({
+    mutationFn: (id) => appClient.entities.CoachConnection.update(id, { 
+      status: "active",
+      accepted_at: new Date().toISOString()
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['coach-clients'] });
+      toast.success("Connection accepted!");
+    }
+  });
+
+  const declineMutation = useMutation({
+    mutationFn: (id) => appClient.entities.CoachConnection.update(id, { status: "revoked" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['coach-clients'] });
+      toast.success("Connection declined");
+    }
+  });
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-purple-50">
+      <div className="max-w-6xl mx-auto px-3 sm:px-4 py-4 md:py-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 md:mb-8">
+          <div>
+            <h1 className="text-2xl md:text-3xl font-bold text-slate-800">Coach Dashboard</h1>
+            <p className="text-slate-500 text-sm mt-1">View and manage your clients' health data</p>
+          </div>
+          <Button onClick={() => setShowInviteDialog(true)} className="bg-purple-600 hover:bg-purple-700 w-full sm:w-auto">
+            <UserPlus className="w-4 h-4 mr-2" />
+            Invite Client
+          </Button>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 mb-6 md:mb-8">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-purple-100 rounded-lg">
+                  <Users className="w-5 h-5 text-purple-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-slate-800">{activeConnections.length}</p>
+                  <p className="text-xs text-slate-500">Active Clients</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-amber-100 rounded-lg">
+                  <Clock className="w-5 h-5 text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-slate-800">{pendingConnections.length}</p>
+                  <p className="text-xs text-slate-500">Pending Requests</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Pending Requests */}
+        {pendingConnections.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
+              <Clock className="w-5 h-5 text-amber-500" />
+              Pending Connection Requests
+            </h2>
+            <div className="space-y-3">
+              {pendingConnections.map(conn => (
+                <Card key={conn.id} className="border-amber-200 bg-amber-50/50">
+                  <CardContent className="p-3 sm:p-4">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+                          <span className="font-semibold text-amber-700">
+                            {conn.client_name?.[0]?.toUpperCase() || "C"}
+                          </span>
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-medium text-slate-800 truncate">{conn.client_name}</p>
+                          <p className="text-sm text-slate-500 truncate">{conn.client_email}</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 ml-auto sm:ml-0">
+                        <Button
+                          size="sm"
+                          onClick={() => acceptMutation.mutate(conn.id)}
+                          disabled={acceptMutation.isPending}
+                          className="bg-green-600 hover:bg-green-700"
+                        >
+                          <CheckCircle className="w-4 h-4 sm:mr-1" />
+                          <span className="hidden sm:inline">Accept</span>
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => declineMutation.mutate(conn.id)}
+                          className="text-red-600 border-red-200"
+                        >
+                          <span className="sm:hidden">✕</span>
+                          <span className="hidden sm:inline">Decline</span>
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Active Clients */}
+        <div>
+          <h2 className="text-lg font-semibold text-slate-800 mb-4 flex items-center gap-2">
+            <UserCheck className="w-5 h-5 text-green-500" />
+            Your Clients
+          </h2>
+
+          {connectionsLoading ? (
+            <div className="flex justify-center py-12">
+              <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+            </div>
+          ) : activeConnections.length === 0 ? (
+            <Card className="border-dashed">
+              <CardContent className="py-12 text-center">
+                <Users className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                <p className="text-slate-500">No active clients yet</p>
+                <p className="text-sm text-slate-400 mt-1">Invite clients to connect and start coaching</p>
+                <Button onClick={() => setShowInviteDialog(true)} className="mt-4" variant="outline">
+                  <UserPlus className="w-4 h-4 mr-2" />
+                  Invite Your First Client
+                </Button>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid md:grid-cols-2 gap-4">
+              {activeConnections.map(conn => (
+                <ClientCard key={conn.id} connection={conn} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Invite Client Dialog */}
+        <Dialog open={showInviteDialog} onOpenChange={(open) => {
+          setShowInviteDialog(open);
+          if (!open) {
+            setInviteSuccess(false);
+            setInviteForm({ client_email: "", client_name: "", message: "" });
+          }
+        }}>
+          <DialogContent className="max-w-md">
+            {inviteSuccess ? (
+              <div className="py-8 text-center">
+                <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+                  <CheckCircle className="w-8 h-8 text-green-600" />
+                </div>
+                <h3 className="text-xl font-semibold text-slate-800 mb-2">Invitation Sent!</h3>
+                <p className="text-slate-600 mb-1">
+                  An email has been sent to <strong>{inviteForm.client_email}</strong>
+                </p>
+                <p className="text-sm text-slate-500 mb-6">
+                  They'll appear in your pending list once they accept.
+                </p>
+                <Button 
+                  onClick={() => {
+                    setShowInviteDialog(false);
+                    setInviteSuccess(false);
+                    setInviteForm({ client_email: "", client_name: "", message: "" });
+                  }}
+                  className="bg-purple-600 hover:bg-purple-700"
+                >
+                  Done
+                </Button>
+              </div>
+            ) : (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    <Mail className="w-5 h-5 text-purple-600" />
+                    Invite Client
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <div>
+                    <Label>Client Email *</Label>
+                    <Input
+                      type="email"
+                      value={inviteForm.client_email}
+                      onChange={(e) => setInviteForm(prev => ({ ...prev, client_email: e.target.value }))}
+                      placeholder="client@example.com"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label>Client Name (optional)</Label>
+                    <Input
+                      value={inviteForm.client_name}
+                      onChange={(e) => setInviteForm(prev => ({ ...prev, client_name: e.target.value }))}
+                      placeholder="John Doe"
+                      className="mt-1"
+                    />
+                  </div>
+                  <div>
+                    <Label>Personal Message (optional)</Label>
+                    <Textarea
+                      value={inviteForm.message}
+                      onChange={(e) => setInviteForm(prev => ({ ...prev, message: e.target.value }))}
+                      placeholder="Hi, I'd like to coach you on your health journey through Gluco Vital..."
+                      className="mt-1 h-20"
+                    />
+                  </div>
+                  <div className="bg-purple-50 p-3 rounded-lg text-sm text-purple-700">
+                    <p className="font-medium">What happens next:</p>
+                    <ul className="mt-1 text-xs space-y-1">
+                      <li>• Client receives an email invitation</li>
+                      <li>• They sign up (if new) and accept the connection</li>
+                      <li>• Once accepted, you can view their health data</li>
+                    </ul>
+                  </div>
+                  <Button 
+                    onClick={() => inviteMutation.mutate(inviteForm)}
+                    disabled={!inviteForm.client_email || inviteMutation.isPending}
+                    className="w-full bg-purple-600 hover:bg-purple-700"
+                  >
+                    {inviteMutation.isPending ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                    ) : (
+                      <Mail className="w-4 h-4 mr-2" />
+                    )}
+                    Send Invitation
+                  </Button>
+                </div>
+              </>
+            )}
+          </DialogContent>
+        </Dialog>
+      </div>
+    </div>
+  );
+}
+
+function ClientCard({ connection }) {
+  const { data: logs = [] } = useQuery({
+    queryKey: ['client-logs', connection.client_email],
+    queryFn: () => appClient.entities.HealthLog.filter(
+      { user_email: connection.client_email },
+      '-created_date',
+      50
+    ),
+    enabled: connection.permissions?.includes('view_logs')
+  });
+
+  const { data: profile } = useQuery({
+    queryKey: ['client-profile', connection.client_email],
+    queryFn: () => appClient.entities.PatientProfile.filter({ user_email: connection.client_email }),
+    select: data => data?.[0]
+  });
+
+  const sugarLogs = logs.filter(l => l.log_type === "sugar" && l.numeric_value);
+  const lastSugar = sugarLogs[0]?.numeric_value;
+  const avgSugar = sugarLogs.length > 0
+    ? Math.round(sugarLogs.slice(0, 7).reduce((a, b) => a + b.numeric_value, 0) / Math.min(sugarLogs.length, 7))
+    : null;
+
+  const bpLogs = logs.filter(l => l.log_type === "blood_pressure");
+  const lastBP = bpLogs[0]?.value;
+
+  const todayLogs = logs.filter(l => isToday(new Date(l.created_date)));
+
+  const hasHighSugar = lastSugar && lastSugar > 180;
+  const hasLowSugar = lastSugar && lastSugar < 70;
+
+  return (
+    <Card className={`hover:shadow-md transition-shadow ${hasHighSugar || hasLowSugar ? 'border-red-200' : ''}`}>
+      <CardContent className="p-3 sm:p-5">
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500/20 to-purple-600/20 flex items-center justify-center">
+              <span className="text-lg font-semibold text-purple-600">
+                {connection.client_name?.[0]?.toUpperCase() || "C"}
+              </span>
+            </div>
+            <div>
+              <h3 className="font-semibold text-slate-800">{connection.client_name}</h3>
+              <p className="text-sm text-slate-500">
+                {profile?.age ? `${profile.age} yrs` : ""} 
+                {profile?.conditions?.length > 0 && ` • ${profile.conditions.join(", ")}`}
+              </p>
+            </div>
+          </div>
+          {(hasHighSugar || hasLowSugar) && (
+            <Badge className="bg-red-100 text-red-700">
+              <AlertTriangle className="w-3 h-3 mr-1" />
+              Alert
+            </Badge>
+          )}
+        </div>
+
+        {/* Quick Stats */}
+        <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-4">
+          <div className="p-2 sm:p-3 bg-blue-50 rounded-lg text-center">
+            <Droplet className="w-3 h-3 sm:w-4 sm:h-4 text-blue-500 mx-auto mb-1" />
+            <p className={`text-base sm:text-lg font-bold ${hasHighSugar ? 'text-red-600' : hasLowSugar ? 'text-amber-600' : 'text-slate-800'}`}>
+              {lastSugar || "--"}
+            </p>
+            <p className="text-[10px] sm:text-xs text-slate-500">Last Sugar</p>
+          </div>
+          <div className="p-2 sm:p-3 bg-red-50 rounded-lg text-center">
+            <Heart className="w-3 h-3 sm:w-4 sm:h-4 text-red-500 mx-auto mb-1" />
+            <p className="text-base sm:text-lg font-bold text-slate-800">{lastBP || "--"}</p>
+            <p className="text-[10px] sm:text-xs text-slate-500">Last BP</p>
+          </div>
+          <div className="p-2 sm:p-3 bg-green-50 rounded-lg text-center">
+            <TrendingUp className="w-3 h-3 sm:w-4 sm:h-4 text-green-500 mx-auto mb-1" />
+            <p className="text-base sm:text-lg font-bold text-slate-800">{avgSugar || "--"}</p>
+            <p className="text-[10px] sm:text-xs text-slate-500">7-Day Avg</p>
+          </div>
+        </div>
+
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs sm:text-sm text-slate-500 mb-4 gap-1">
+          <span>{todayLogs.length} logs today</span>
+          <span className="truncate">Last: {logs[0] ? format(new Date(logs[0].created_date), "MMM d, h:mm a") : "Never"}</span>
+        </div>
+
+        {/* Actions */}
+        <div className="flex flex-wrap gap-2">
+          <Link to={createPageUrl(`PatientDetail?email=${connection.client_email}&connection=${connection.id}&type=coach`)} className="flex-1 min-w-[120px]">
+            <Button variant="outline" className="w-full" size="sm">
+              <Activity className="w-4 h-4 mr-1" />
+              <span className="hidden xs:inline">View</span> Details
+            </Button>
+          </Link>
+          <Button variant="outline" size="sm">
+            <MessageCircle className="w-4 h-4" />
+          </Button>
+          <Button size="sm" className="bg-purple-600 hover:bg-purple-700">
+            <FileText className="w-4 h-4 sm:mr-1" />
+            <span className="hidden sm:inline">Notes</span>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

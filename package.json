@@ -1,0 +1,27 @@
+{
+  "name": "med-platform",
+  "private": true,
+  "version": "0.1.0",
+  "description": "India-first multilingual clinical multi-agent platform monorepo",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "dev:medisuite": "npm run dev -w @med-platform/medisuite -- --host --port 4101",
+    "dev:mediscribe": "npm run dev -w @med-platform/mediscribe -- --host --port 4102",
+    "dev:medipal": "npm run dev -w @med-platform/medipal -- --host --port 4103",
+    "dev:gluco-vital": "npm run dev -w @med-platform/gluco-vital -- --host --port 4104",
+    "dev:doctor-agent": "npm run start -w doctor-agent",
+    "dev:all": "concurrently \"npm run dev:medisuite\" \"npm run dev:mediscribe\" \"npm run dev:medipal\" \"npm run dev:gluco-vital\"",
+    "dev:stack": "concurrently \"npm run dev:doctor-agent\" \"npm run dev:all\"",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "typescript": "^5.8.2"
+  }
+}
