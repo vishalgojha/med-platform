@@ -106,6 +106,54 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   count INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS wa_tenants (
+  id TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'connected',
+  provider TEXT NOT NULL DEFAULT 'whatsapp_web',
+  whatsapp_number TEXT NOT NULL UNIQUE,
+  twilio_account_sid TEXT NOT NULL,
+  twilio_auth_token_enc TEXT NOT NULL,
+  twilio_from_number TEXT NOT NULL,
+  anthropic_api_key_enc TEXT NOT NULL,
+  ai_model TEXT NOT NULL,
+  default_specialty_id TEXT NOT NULL DEFAULT 'family_medicine',
+  default_workflow TEXT NOT NULL DEFAULT 'triage_intake',
+  default_language TEXT NOT NULL DEFAULT 'en',
+  default_doctor_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wa_conversations (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES wa_tenants(id),
+  user_phone TEXT NOT NULL,
+  patient_id TEXT NOT NULL REFERENCES patients(id),
+  doctor_id TEXT NOT NULL REFERENCES doctors(id),
+  specialty_id TEXT NOT NULL,
+  language TEXT NOT NULL DEFAULT 'en',
+  last_inbound_message_sid TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (tenant_id, user_phone)
+);
+
+CREATE TABLE IF NOT EXISTS wa_message_events (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL REFERENCES wa_tenants(id),
+  conversation_id TEXT REFERENCES wa_conversations(id),
+  direction TEXT NOT NULL,
+  provider_message_id TEXT NOT NULL,
+  from_phone TEXT NOT NULL,
+  to_phone TEXT NOT NULL,
+  body TEXT NOT NULL,
+  status TEXT NOT NULL,
+  metadata TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (tenant_id, direction, provider_message_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_notes_patient_created ON notes(patient_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_prior_auths_patient_status ON prior_auths(patient_id, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_follow_ups_status_schedule ON follow_ups(status, scheduled_at);
@@ -115,3 +163,6 @@ CREATE INDEX IF NOT EXISTS idx_follow_ups_delivery_status ON follow_ups(delivery
 CREATE INDEX IF NOT EXISTS idx_follow_up_dead_letters_created ON follow_up_dead_letters(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_follow_up_provider_events_received ON follow_up_provider_events(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_replay_executed ON replay_log(executed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wa_tenants_status ON wa_tenants(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wa_conversations_tenant_updated ON wa_conversations(tenant_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_wa_message_events_tenant_created ON wa_message_events(tenant_id, created_at DESC);

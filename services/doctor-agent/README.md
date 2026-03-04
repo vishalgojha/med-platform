@@ -20,7 +20,8 @@ npm run ui:install
 ## Environment
 Configure `.env`:
 - `ANTHROPIC_API_KEY`, `AI_MODEL`
-- `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`
+- `TENANT_SECRET_KEY`, `AGENTIC_WHATSAPP_DRY_RUN`
+- `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` (only required for `provider=twilio`)
 - `TWILIO_WEBHOOK_VALIDATE`, `TWILIO_WEBHOOK_AUTH_TOKEN`, `PUBLIC_BASE_URL`
 - `TWILIO_WEBHOOK_MAX_BODY_BYTES`, `TWILIO_WEBHOOK_BODY_TIMEOUT_MS`, `TWILIO_WEBHOOK_DEDUPE_TTL_MS`
 - `PORT`, `DB_PATH`, `DRY_RUN`, `API_TOKEN`
@@ -140,6 +141,15 @@ Endpoints:
 - `GET /api/ops/metrics`
 - `POST /api/decide`
 - `POST /webhooks/twilio/status`
+- `GET /api/wa/tenants`
+- `GET /api/wa/tenants/:id`
+- `POST /api/wa/tenants`
+- `POST /api/wa/tenants/:id/connect`
+- `POST /api/wa/tenants/:id/disconnect`
+- `GET /api/wa/workers`
+- `GET /api/wa/tenants/:id/web-session`
+- `POST /api/wa/tenants/:id/web-session/start`
+- `POST /webhooks/whatsapp/twilio/inbound`
 - `GET /api/replay`
 - `GET /api/replay/:id`
 - `POST /api/replay/prune`
@@ -186,6 +196,51 @@ Content-Type: application/x-www-form-urlencoded
 ```
 Expected fields include `MessageSid`, `MessageStatus`, optional `ErrorCode`, and `ErrorMessage`.
 Duplicate delivery events are deduplicated; out-of-order regressions are ignored by monotonic guards.
+
+Agentic WhatsApp inbound callback:
+```http
+POST /webhooks/whatsapp/twilio/inbound
+Content-Type: application/x-www-form-urlencoded
+```
+Expected fields include `MessageSid`, `From`, `To`, `Body`, and optional `ProfileName`.
+Webhook processing is tenant-aware by destination number (`To`), supports command routing like `Connect me with cardiology`,
+stores conversation context, and responds with tenant-specific credentials.
+
+Tenant onboarding payload example (Twilio transport):
+```json
+{
+  "displayName": "Clinic One",
+  "provider": "twilio",
+  "whatsappNumber": "+919900001111",
+  "twilioFromNumber": "+919900001111",
+  "twilioAccountSid": "AC_xxx",
+  "twilioAuthToken": "twilio_auth_token",
+  "anthropicApiKey": "sk-ant-xxx",
+  "defaultSpecialtyId": "family_medicine",
+  "defaultWorkflow": "triage_intake",
+  "defaultLanguage": "en"
+}
+```
+
+Tenant onboarding payload example (OpenClaw-style WhatsApp Web transport, default):
+```json
+{
+  "displayName": "Clinic Web",
+  "provider": "whatsapp_web",
+  "whatsappNumber": "+919900001112",
+  "anthropicApiKey": "sk-ant-xxx",
+  "defaultSpecialtyId": "family_medicine",
+  "defaultWorkflow": "triage_intake",
+  "defaultLanguage": "en"
+}
+```
+
+Start WhatsApp Web session and fetch QR:
+```http
+POST /api/wa/tenants/:id/web-session/start
+GET /api/wa/tenants/:id/web-session
+```
+The QR code is returned in `data.session.qrCode` until linked. Session auth is stored under `data/wa-auth/<tenantId>/`.
 
 Readiness endpoint:
 - `GET /health/ready` (includes DB/queue snapshot)

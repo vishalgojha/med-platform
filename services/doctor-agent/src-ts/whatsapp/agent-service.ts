@@ -1,0 +1,580 @@
+import type { SupportedLanguage } from "@med-platform/clinical-specialties";
+import { AnthropicClient, StubAIClient, type AIClient } from "../ai/client.js";
+import { getConfig } from "../config.js";
+import { addDoctor, getDoctorById } from "../doctors/store.js";
+import type { ExecuteOptions } from "../engine/executor.js";
+import { logger } from "../logger.js";
+import { addPatient } from "../patients/store.js";
+import {
+  executeAgentWorkflow,
+  normalizeSpecialtyId,
+  parseWorkflow,
+  type OrchestrationWorkflow
+} from "../orchestration/router.js";
+import { createCapabilityHandlers } from "../runtime.js";
+import { StubMessagingAdapter } from "../messaging/stub.js";
+import { makeId } from "../utils.js";
+import { decryptSecret } from "./crypto.js";
+import { TenantTwilioMessagingAdapter } from "./messaging.js";
+import {
+  getWhatsAppConversationByTenantAndUser,
+  getWhatsAppTenantWithSecretsById,
+  getWhatsAppTenantWithSecretsByNumber,
+  normalizeWhatsAppNumber,
+  recordWhatsAppMessageEvent,
+  upsertWhatsAppConversation
+} from "./store.js";
+import type { WhatsAppConversation, WhatsAppTenantWithSecrets } from "./types.js";
+import type { TenantWorkerManager } from "./worker-manager.js";
+
+interface TwilioInboundPayload {
+  MessageSid: string;
+  Body: string;
+  From: string;
+  To: string;
+  ProfileName?: string;
+}
+
+export interface InboundWhatsAppPayload {
+  messageSid: string;
+  body: string;
+  from: string;
+  to: string;
+  profileName?: string;
+  tenantId?: string;
+}
+
+export interface ReplyResult {
+  providerMessageId: string;
+  fromNumber: string;
+  status: string;
+}
+
+export type TenantReplySender = (input: {
+  tenant: WhatsAppTenantWithSecrets;
+  to: string;
+  body: string;
+  conversationId?: string;
+}) => Promise<ReplyResult>;
+
+export interface InboundProcessingResult {
+  tenantId: string;
+  conversationId?: string;
+  deduped: boolean;
+  applied: boolean;
+  replyBody?: string;
+  providerReplyId?: string;
+  ignoredReason?: string;
+}
+
+interface ConversationContext {
+  conversation: WhatsAppConversation;
+  doctorId: string;
+  patientId: string;
+  language: SupportedLanguage;
+}
+
+const AGENT_SPECIALTY_ALIAS: Record<string, string> = {
+  health_assistant: "family_medicine",
+  family_medicine_assistant: "family_medicine",
+  cardio_assistant: "cardiology",
+  diabetes_assistant: "endocrinology",
+  sugar_assistant: "endocrinology",
+  ortho_assistant: "orthopedics",
+  child_assistant: "pediatrics",
+  women_health_assistant: "obstetrics_gynecology"
+};
+
+function hasStructuredError(value: unknown): value is { ok: false; message: string } {
+  if (!value || typeof value !== "object") return false;
+  const obj = value as { ok?: unknown; message?: unknown };
+  return obj.ok === false && typeof obj.message === "string";
+}
+
+function detectLanguage(body: string, fallback: SupportedLanguage): SupportedLanguage {
+  if (/[\u0900-\u097F]/.test(body)) {
+    return "hi";
+  }
+  return fallback;
+}
+
+function extractConnectSpecialty(body: string): string | null {
+  const match = body.trim().toLowerCase().match(/^connect me with\s+([a-z0-9_\-\s]+)$/i);
+  if (!match?.[1]) return null;
+  const alias = match[1].trim().replace(/\s+/g, "_");
+  return normalizeSpecialtyId(alias) ?? AGENT_SPECIALTY_ALIAS[alias] ?? null;
+}
+
+function sanitizeReply(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "I received your message. Please share more details.";
+  return trimmed.length <= 1400 ? trimmed : `${trimmed.slice(0, 1397)}...`;
+}
+
+function createDryRunAIClient(): AIClient {
+  return new StubAIClient((systemPrompt) => {
+    if (systemPrompt.includes("SOAP")) {
+      return JSON.stringify({
+        subjective: "Patient shared symptoms in chat.",
+        objective: "Chat-based intake only.",
+        assessment: "Further evaluation required.",
+        plan: "Escalate to clinician review."
+      });
+    }
+    if (systemPrompt.includes("prior authorization")) {
+      return JSON.stringify({ clinicalJustification: "Clinical criteria documented from WhatsApp triage." });
+    }
+    if (systemPrompt.includes("follow-up")) {
+      return JSON.stringify({ body: "Please follow your care plan and contact your clinic for urgent issues." });
+    }
+    return JSON.stringify([
+      {
+        type: "protocol_suggestion",
+        severity: "info",
+        message: "Preliminary triage complete. A clinician should confirm next actions.",
+        sources: ["internal-guideline"]
+      }
+    ]);
+  });
+}
+
+function createTenantAIClient(apiKey: string, model: string): AIClient {
+  const cfg = getConfig();
+  if (cfg.dryRun || cfg.agenticWhatsappDryRun || !apiKey.trim()) {
+    return createDryRunAIClient();
+  }
+  return new AnthropicClient(apiKey, model);
+}
+
+function ensureTenantDoctorId(tenantId: string, tenantName: string, specialtyId: string, preferredDoctorId?: string): string {
+  if (preferredDoctorId && getDoctorById(preferredDoctorId)) {
+    return preferredDoctorId;
+  }
+
+  const fallbackId = `wa_doc_${tenantId.replace(/[^a-zA-Z0-9_]/g, "")}`;
+  if (getDoctorById(fallbackId)) {
+    return fallbackId;
+  }
+
+  try {
+    const created = addDoctor({
+      id: fallbackId,
+      name: `${tenantName} Virtual Care`,
+      specialty: specialtyId
+    });
+    return created.id;
+  } catch (error) {
+    const existing = getDoctorById(fallbackId);
+    if (existing) return existing.id;
+    throw error;
+  }
+}
+
+function ensureConversationContext(input: {
+  tenantId: string;
+  tenantName: string;
+  tenantDoctorId?: string;
+  userPhone: string;
+  userDisplayName?: string;
+  specialtyId: string;
+  language: SupportedLanguage;
+  lastInboundMessageSid: string;
+}): ConversationContext {
+  const doctorId = ensureTenantDoctorId(input.tenantId, input.tenantName, input.specialtyId, input.tenantDoctorId);
+  const existing = getWhatsAppConversationByTenantAndUser(input.tenantId, input.userPhone);
+  if (existing) {
+    const next = upsertWhatsAppConversation({
+      tenantId: input.tenantId,
+      userPhone: input.userPhone,
+      patientId: existing.patientId,
+      doctorId: existing.doctorId,
+      specialtyId: existing.specialtyId,
+      language: input.language,
+      lastInboundMessageSid: input.lastInboundMessageSid
+    });
+    return {
+      conversation: next,
+      doctorId: next.doctorId,
+      patientId: next.patientId,
+      language: next.language
+    };
+  }
+
+  const patient = addPatient({
+    doctorId,
+    name: input.userDisplayName?.trim() || `WhatsApp ${input.userPhone}`,
+    phone: input.userPhone
+  });
+  const conversation = upsertWhatsAppConversation({
+    tenantId: input.tenantId,
+    userPhone: input.userPhone,
+    patientId: patient.id,
+    doctorId,
+    specialtyId: input.specialtyId,
+    language: input.language,
+    lastInboundMessageSid: input.lastInboundMessageSid
+  });
+  return {
+    conversation,
+    doctorId,
+    patientId: patient.id,
+    language: conversation.language
+  };
+}
+
+function formatWorkflowOutput(output: unknown, language: SupportedLanguage): string {
+  const englishHeader = "Here is the initial clinical guidance:";
+  const hindiHeader = "यह प्रारंभिक क्लिनिकल मार्गदर्शन है:";
+
+  if (Array.isArray(output)) {
+    const messages = output
+      .map((entry) => (entry && typeof entry === "object" ? (entry as { message?: unknown }).message : null))
+      .filter((message): message is string => typeof message === "string" && message.trim().length > 0)
+      .slice(0, 4);
+    if (messages.length > 0) {
+      const lines = messages.map((message, index) => `${index + 1}. ${message.trim()}`);
+      const footer =
+        language === "hi"
+          ? "आपात स्थिति में तुरंत नज़दीकी अस्पताल जाएं।"
+          : "If this is urgent, please go to the nearest emergency department.";
+      return sanitizeReply(`${language === "hi" ? hindiHeader : englishHeader}\n${lines.join("\n")}\n${footer}`);
+    }
+  }
+
+  if (output && typeof output === "object") {
+    const record = output as Record<string, unknown>;
+    if (typeof record.plan === "string" && record.plan.trim()) {
+      const intro = language === "hi" ? "अगला कदम:" : "Next step:";
+      return sanitizeReply(`${intro} ${record.plan.trim()}`);
+    }
+  }
+
+  if (typeof output === "string" && output.trim()) {
+    return sanitizeReply(output);
+  }
+
+  return language === "hi"
+    ? "आपका संदेश प्राप्त हुआ। कृपया लक्षण और अवधि बताएं ताकि बेहतर सहायता दी जा सके।"
+    : "Message received. Please share symptoms and duration so I can assist better.";
+}
+
+function buildWorkflowPayload(workflow: OrchestrationWorkflow, messageBody: string, language: SupportedLanguage): Record<string, unknown> {
+  const languageInstruction =
+    language === "hi"
+      ? "Respond in Hindi for the patient-facing content."
+      : "Respond in English for the patient-facing content.";
+
+  if (workflow === "consultation_documentation") {
+    return {
+      transcript: messageBody,
+      query: languageInstruction
+    };
+  }
+  if (workflow === "follow_up_outreach") {
+    return {
+      trigger: "custom",
+      customMessage: messageBody,
+      channel: "whatsapp",
+      sendNow: false
+    };
+  }
+  if (workflow === "prior_authorization") {
+    return {
+      procedureCode: "UNSPECIFIED",
+      diagnosisCodes: ["UNSPECIFIED"],
+      insurerId: "UNSPECIFIED",
+      submit: false
+    };
+  }
+  return {
+    query: `${messageBody}\n\n${languageInstruction}`
+  };
+}
+
+function formatConnectReply(specialtyId: string, language: SupportedLanguage): string {
+  if (language === "hi") {
+    return `कनेक्शन सफल। अब आपको ${specialtyId.replace(/_/g, " ")} एजेंट से सहायता मिलेगी।`;
+  }
+  return `Connected successfully. You are now routed to ${specialtyId.replace(/_/g, " ")} support.`;
+}
+
+function formatErrorReply(language: SupportedLanguage): string {
+  if (language === "hi") {
+    return "अभी सहायक उपलब्ध नहीं है। कृपया कुछ देर बाद दोबारा प्रयास करें या क्लिनिक से संपर्क करें।";
+  }
+  return "Assistant is temporarily unavailable. Please try again shortly or contact your clinic.";
+}
+
+export async function processInboundWhatsAppMessage(
+  payload: InboundWhatsAppPayload,
+  workers: TenantWorkerManager,
+  replySender: TenantReplySender
+): Promise<InboundProcessingResult> {
+  const inboundSid = payload.messageSid?.trim() || makeId("wa_inbound");
+  const from = normalizeWhatsAppNumber(payload.from);
+  const to = normalizeWhatsAppNumber(payload.to);
+  const body = (payload.body ?? "").trim();
+  if (!from || !to || !body) {
+    return {
+      tenantId: "",
+      deduped: false,
+      applied: false,
+      ignoredReason: "invalid_inbound_payload"
+    };
+  }
+
+  const tenant =
+    (payload.tenantId ? getWhatsAppTenantWithSecretsById(payload.tenantId) : null) ??
+    getWhatsAppTenantWithSecretsByNumber(to);
+  if (!tenant) {
+    return {
+      tenantId: "",
+      deduped: false,
+      applied: false,
+      ignoredReason: "tenant_not_found"
+    };
+  }
+  if (tenant.status === "connected") {
+    workers.connect(tenant);
+  } else {
+    workers.disconnect(tenant);
+  }
+
+  const inboundRecord = recordWhatsAppMessageEvent({
+    tenantId: tenant.id,
+    direction: "inbound",
+    providerMessageId: inboundSid,
+    fromPhone: from,
+    toPhone: to,
+    body,
+    status: "received",
+    metadata: JSON.stringify({
+      profileName: payload.profileName ?? null
+    })
+  });
+  if (!inboundRecord.accepted) {
+    return {
+      tenantId: tenant.id,
+      conversationId: inboundRecord.event.conversationId,
+      deduped: true,
+      applied: false,
+      ignoredReason: "duplicate_inbound_event"
+    };
+  }
+
+  if (tenant.status !== "connected") {
+    return {
+      tenantId: tenant.id,
+      deduped: false,
+      applied: false,
+      ignoredReason: "tenant_disconnected"
+    };
+  }
+
+  const language = detectLanguage(body, tenant.defaultLanguage);
+  const context = ensureConversationContext({
+    tenantId: tenant.id,
+    tenantName: tenant.displayName,
+    tenantDoctorId: tenant.defaultDoctorId,
+    userPhone: from,
+    userDisplayName: payload.profileName,
+    specialtyId: tenant.defaultSpecialtyId,
+    language,
+    lastInboundMessageSid: inboundSid
+  });
+  workers.noteInbound(tenant.id);
+
+  const connectSpecialtyId = extractConnectSpecialty(body);
+  if (connectSpecialtyId) {
+    const routedConversation = upsertWhatsAppConversation({
+      tenantId: tenant.id,
+      userPhone: from,
+      patientId: context.patientId,
+      doctorId: context.doctorId,
+      specialtyId: connectSpecialtyId,
+      language,
+      lastInboundMessageSid: inboundSid
+    });
+    const connectReply = formatConnectReply(connectSpecialtyId, language);
+    const outbound = await replySender({
+      tenant,
+      to: from,
+      body: connectReply,
+      conversationId: routedConversation.id
+    });
+    workers.noteOutbound(tenant.id);
+    return {
+      tenantId: tenant.id,
+      conversationId: routedConversation.id,
+      deduped: false,
+      applied: true,
+      replyBody: connectReply,
+      providerReplyId: outbound.providerMessageId
+    };
+  }
+
+  const workflow = parseWorkflow(tenant.defaultWorkflow) ?? "triage_intake";
+  const aiModel = tenant.aiModel || getConfig().aiModel;
+  const aiClient = createTenantAIClient(decryptSecret(tenant.anthropicApiKey), aiModel);
+  const messaging =
+    tenant.provider === "twilio" &&
+    tenant.twilioAccountSid &&
+    tenant.twilioAuthToken &&
+    tenant.twilioFromNumber
+      ? new TenantTwilioMessagingAdapter({
+          accountSid: tenant.twilioAccountSid,
+          authToken: decryptSecret(tenant.twilioAuthToken),
+          fromNumber: tenant.twilioFromNumber
+        })
+      : new StubMessagingAdapter();
+  const handlers = createCapabilityHandlers({
+    aiClient,
+    messaging
+  });
+  const options: ExecuteOptions = {
+    confirm: true,
+    requestId: `wa-${inboundSid}`,
+    actorId: `whatsapp:${from}`
+  };
+
+  let replyBody = "";
+  try {
+    const workflowOutput = await executeAgentWorkflow(
+      {
+        workflow,
+        specialtyId: context.conversation.specialtyId || tenant.defaultSpecialtyId,
+        doctorId: context.doctorId,
+        patientId: context.patientId,
+        payload: buildWorkflowPayload(workflow, body, language),
+        dryRun: getConfig().dryRun
+      },
+      handlers,
+      options
+    );
+
+    if (hasStructuredError(workflowOutput)) {
+      replyBody = formatErrorReply(language);
+      logger.warn("whatsapp.workflow.failed", {
+        tenantId: tenant.id,
+        workflow,
+        message: workflowOutput.message
+      });
+      workers.noteError(tenant.id, workflowOutput.message);
+    } else {
+      const stepOutput = workflowOutput.steps[workflowOutput.steps.length - 1]?.output;
+      replyBody = formatWorkflowOutput(stepOutput, language);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    workers.noteError(tenant.id, message);
+    logger.error("whatsapp.workflow.exception", {
+      tenantId: tenant.id,
+      workflow,
+      message
+    });
+    replyBody = formatErrorReply(language);
+  }
+
+  const outbound = await replySender({
+    tenant,
+    to: from,
+    body: replyBody,
+    conversationId: context.conversation.id
+  });
+  workers.noteOutbound(tenant.id);
+
+  return {
+    tenantId: tenant.id,
+    conversationId: context.conversation.id,
+    deduped: false,
+    applied: true,
+    replyBody,
+    providerReplyId: outbound.providerMessageId
+  };
+}
+
+async function sendTenantTwilioReply(input: {
+  tenant: WhatsAppTenantWithSecrets;
+  to: string;
+  body: string;
+  conversationId?: string;
+}): Promise<ReplyResult> {
+  const cfg = getConfig();
+  const replyText = sanitizeReply(input.body);
+  let providerMessageId = makeId("wa_out");
+  const fromNumber = input.tenant.twilioFromNumber || input.tenant.whatsappNumber;
+  const twilioAuthToken = input.tenant.twilioAuthToken ? decryptSecret(input.tenant.twilioAuthToken) : "";
+
+  if (input.tenant.provider !== "twilio") {
+    throw new Error("Tenant is not configured for Twilio transport");
+  }
+  if (!input.tenant.twilioAccountSid || !twilioAuthToken || !fromNumber) {
+    throw new Error("Twilio credentials are incomplete for tenant");
+  }
+
+  if (!(cfg.dryRun || cfg.agenticWhatsappDryRun)) {
+    const messaging = new TenantTwilioMessagingAdapter({
+      accountSid: input.tenant.twilioAccountSid,
+      authToken: twilioAuthToken,
+      fromNumber
+    });
+    const sent = await messaging.send({
+      to: input.to,
+      body: replyText,
+      channel: "whatsapp"
+    });
+    providerMessageId = sent.id;
+  }
+
+  recordWhatsAppMessageEvent({
+    tenantId: input.tenant.id,
+    conversationId: input.conversationId,
+    direction: "outbound",
+    providerMessageId,
+    fromPhone: fromNumber,
+    toPhone: input.to,
+    body: replyText,
+    status: cfg.dryRun || cfg.agenticWhatsappDryRun ? "dry_run_sent" : "sent",
+    metadata: "{}"
+  });
+
+  return {
+    providerMessageId,
+    fromNumber,
+    status: cfg.dryRun || cfg.agenticWhatsappDryRun ? "dry_run_sent" : "sent"
+  };
+}
+
+export async function processTwilioInboundWhatsApp(
+  payload: TwilioInboundPayload,
+  workers: TenantWorkerManager
+): Promise<InboundProcessingResult> {
+  return processInboundWhatsAppMessage(
+    {
+      messageSid: payload.MessageSid,
+      body: payload.Body,
+      from: payload.From,
+      to: payload.To,
+      profileName: payload.ProfileName
+    },
+    workers,
+    async ({ tenant, to, body, conversationId }) => sendTenantTwilioReply({ tenant, to, body, conversationId })
+  );
+}
+
+export function validateWebhookPayload(body: Record<string, string>): TwilioInboundPayload | null {
+  const messageSid = body.MessageSid?.trim();
+  const from = body.From?.trim();
+  const to = body.To?.trim();
+  const text = body.Body?.trim();
+  if (!messageSid || !from || !to || !text) {
+    return null;
+  }
+  return {
+    MessageSid: messageSid,
+    Body: text,
+    From: from,
+    To: to,
+    ProfileName: body.ProfileName?.trim() || undefined
+  };
+}

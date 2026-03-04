@@ -76,6 +76,9 @@ For initial local/hospital pilot without full SSO:
 - keep `VITE_REQUIRE_AUTH=false` in frontend env files
 - keep `VITE_ENABLE_VISUAL_EDIT_AGENT=false`
 - set `VITE_APP_WHATSAPP_NUMBER` in frontend env files to your agent/business number
+- set `TENANT_SECRET_KEY` in `deploy/env/doctor-agent.env`
+- onboard WhatsApp tenants with `provider=whatsapp_web` for OpenClaw-style QR linking (no Twilio required)
+- keep `AGENTIC_WHATSAPP_DRY_RUN=true` until tenant onboarding is validated
 
 Frontend ports:
 

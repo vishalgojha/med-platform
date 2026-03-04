@@ -57,6 +57,7 @@ import {
   parseSetting,
   parseWorkflow,
 } from "./orchestration/router.js";
+import { registerWhatsAppRoutes } from "./whatsapp/routes.js";
 
 function sendJson(res: Response, status: number, payload: unknown): void {
   res.status(status).json(payload);
@@ -325,6 +326,12 @@ export function createServer(deps: RuntimeDeps = createRuntimeDeps()) {
     rateWindow.set(key, { count: nextCount, resetAt: currentResetAt });
     db.prepare("UPDATE rate_limits SET count = ? WHERE key = ?").run(nextCount, key);
     next();
+  });
+
+  registerWhatsAppRoutes({
+    app,
+    requireScope,
+    sendJson
   });
 
   app.get("/health", (_req, res) => {

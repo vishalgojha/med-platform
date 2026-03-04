@@ -133,4 +133,79 @@ export function runMigrations(): void {
       UNIQUE (provider_message_id, provider_status, error_code_norm, error_message_norm)
     )`
   );
+
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS wa_tenants (
+      id TEXT PRIMARY KEY,
+      display_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'connected',
+      provider TEXT NOT NULL DEFAULT 'whatsapp_web',
+      whatsapp_number TEXT NOT NULL UNIQUE,
+      twilio_account_sid TEXT NOT NULL,
+      twilio_auth_token_enc TEXT NOT NULL,
+      twilio_from_number TEXT NOT NULL DEFAULT '',
+      anthropic_api_key_enc TEXT NOT NULL,
+      ai_model TEXT NOT NULL DEFAULT 'claude-sonnet-4-5',
+      default_specialty_id TEXT NOT NULL DEFAULT 'family_medicine',
+      default_workflow TEXT NOT NULL DEFAULT 'triage_intake',
+      default_language TEXT NOT NULL DEFAULT 'en',
+      default_doctor_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`
+  );
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS wa_conversations (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES wa_tenants(id),
+      user_phone TEXT NOT NULL,
+      patient_id TEXT NOT NULL REFERENCES patients(id),
+      doctor_id TEXT NOT NULL REFERENCES doctors(id),
+      specialty_id TEXT NOT NULL,
+      language TEXT NOT NULL DEFAULT 'en',
+      last_inbound_message_sid TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (tenant_id, user_phone)
+    )`
+  );
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS wa_message_events (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES wa_tenants(id),
+      conversation_id TEXT REFERENCES wa_conversations(id),
+      direction TEXT NOT NULL,
+      provider_message_id TEXT NOT NULL,
+      from_phone TEXT NOT NULL,
+      to_phone TEXT NOT NULL,
+      body TEXT NOT NULL,
+      status TEXT NOT NULL,
+      metadata TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (tenant_id, direction, provider_message_id)
+    )`
+  );
+
+  const waTenantColumns = db
+    .prepare("PRAGMA table_info(wa_tenants)")
+    .all() as Array<{ name: string }>;
+  const waTenantNames = new Set(waTenantColumns.map((c) => c.name));
+  if (!waTenantNames.has("twilio_from_number")) {
+    db.exec("ALTER TABLE wa_tenants ADD COLUMN twilio_from_number TEXT NOT NULL DEFAULT ''");
+  }
+  if (!waTenantNames.has("ai_model")) {
+    db.exec("ALTER TABLE wa_tenants ADD COLUMN ai_model TEXT NOT NULL DEFAULT 'claude-sonnet-4-5'");
+  }
+  if (!waTenantNames.has("default_specialty_id")) {
+    db.exec("ALTER TABLE wa_tenants ADD COLUMN default_specialty_id TEXT NOT NULL DEFAULT 'family_medicine'");
+  }
+  if (!waTenantNames.has("default_workflow")) {
+    db.exec("ALTER TABLE wa_tenants ADD COLUMN default_workflow TEXT NOT NULL DEFAULT 'triage_intake'");
+  }
+  if (!waTenantNames.has("default_language")) {
+    db.exec("ALTER TABLE wa_tenants ADD COLUMN default_language TEXT NOT NULL DEFAULT 'en'");
+  }
+  if (!waTenantNames.has("default_doctor_id")) {
+    db.exec("ALTER TABLE wa_tenants ADD COLUMN default_doctor_id TEXT");
+  }
 }

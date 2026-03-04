@@ -40,6 +40,8 @@ For self-hosted pilots without full identity setup:
 - keep `VITE_ENABLE_VISUAL_EDIT_AGENT=false` to disable editor scaffolding
 - set `VITE_APP_WHATSAPP_NUMBER` to your business WhatsApp number (E.164 digits only)
 - optional: set `VITE_APP_WHATSAPP_AGENT_NUMBERS` JSON for per-agent numbers
+- set `TENANT_SECRET_KEY` in `deploy/env/doctor-agent.env` before onboarding any WhatsApp tenants
+- keep `AGENTIC_WHATSAPP_DRY_RUN=true` during pilot onboarding, then switch to `false` for live replies
 
 ## 2) Launch the stack
 
@@ -97,7 +99,11 @@ docker compose down -v
 - Set strong `API_TOKEN`/`API_TOKEN_*` in `deploy/env/doctor-agent.env`.
 - Set `VITE_REQUIRE_AUTH=true` only after login/identity endpoints are fully configured.
 - Keep `DRY_RUN=true` until live messaging approvals are complete.
-- Configure `TWILIO_*` and set `DRY_RUN=false` only after validation.
+- Set `TENANT_SECRET_KEY` to a strong value and rotate through change windows.
+- Use one transport per tenant: `provider=whatsapp_web` (QR-linked, OpenClaw-style) or `provider=twilio`.
+- For `whatsapp_web`, onboard tenant via `/api/wa/tenants` and start session using `/api/wa/tenants/:id/web-session/start`.
+- Configure `TWILIO_*` only for Twilio-mode tenants, and set `DRY_RUN=false` only after validation.
+- Use `/api/wa/tenants` onboarding and `/api/wa/workers` status checks for each clinic/hospital tenant.
 - Put TLS termination in front of ports `4101-4104` (load balancer or ingress).
 - Restrict backend access to trusted networks (VPN/private subnet where possible).
 - Attach centralized logs and metrics for audit/compliance.

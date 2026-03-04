@@ -3,9 +3,11 @@ import dotenv from "dotenv";
 export interface Config {
   anthropicApiKey: string;
   aiModel: string;
+  tenantSecretKey: string;
   twilioAccountSid: string;
   twilioAuthToken: string;
   twilioFromNumber: string;
+  agenticWhatsappDryRun: boolean;
   apiToken: string;
   apiTokenRead: string;
   apiTokenWrite: string;
@@ -34,9 +36,11 @@ export function readConfig(): Config {
   const cfg: Config = {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
     aiModel: process.env.AI_MODEL ?? "claude-sonnet-4-5",
+    tenantSecretKey: process.env.TENANT_SECRET_KEY ?? "change-me-in-production",
     twilioAccountSid: process.env.TWILIO_ACCOUNT_SID ?? "",
     twilioAuthToken: process.env.TWILIO_AUTH_TOKEN ?? "",
     twilioFromNumber: process.env.TWILIO_FROM_NUMBER ?? "",
+    agenticWhatsappDryRun: String(process.env.AGENTIC_WHATSAPP_DRY_RUN ?? process.env.DRY_RUN ?? "false").toLowerCase() === "true",
     apiToken: process.env.API_TOKEN ?? "",
     apiTokenRead: process.env.API_TOKEN_READ ?? "",
     apiTokenWrite: process.env.API_TOKEN_WRITE ?? "",
@@ -80,6 +84,9 @@ export function readConfig(): Config {
   }
   if (!Number.isFinite(cfg.replayRetentionIntervalMs) || cfg.replayRetentionIntervalMs <= 0) {
     throw new Error("REPLAY_RETENTION_INTERVAL_MS must be a positive number");
+  }
+  if (!cfg.tenantSecretKey.trim()) {
+    throw new Error("TENANT_SECRET_KEY must not be empty");
   }
 
   return cfg;

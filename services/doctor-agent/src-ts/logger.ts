@@ -7,7 +7,11 @@ const REDACT_KEYS = new Set([
   "phone",
   "to",
   "patient_phone",
-  "patient_name"
+  "patient_name",
+  "twilioAuthToken",
+  "anthropicApiKey",
+  "apiKey",
+  "authToken"
 ]);
 
 export function redact<T>(input: T): T {
