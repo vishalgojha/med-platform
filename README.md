@@ -1,6 +1,6 @@
-# Med Platform (Monorepo)
+# Med Platform
 
-Unified TypeScript monorepo for India-first hospital and clinic deployment:
+Unified TypeScript platform for India-first hospital and clinic deployment:
 
 - `apps/medisuite`
 - `apps/mediscribe`
@@ -52,7 +52,7 @@ npm run build
 
 ## Production Deployment (Docker)
 
-The monorepo includes a production deployment pack:
+The platform includes a production deployment pack:
 
 - root `docker-compose.yml`
 - `deploy/docker/doctor-agent.Dockerfile`
